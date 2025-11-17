@@ -30,9 +30,26 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  lottie: ^3.1.0
-  geolocator: ^12.0.0
-  geocoding: ^3.0.0
+
+  # Gestion des préférences locales
+  shared_preferences: ^2.2.0
+  lottie: ^2.4.0
+  # Géolocalisation
+  geolocator: ^14.0.2
+  geocoding: ^4.0.0
+
+  # Cartes
+  flutter_map: ^8.2.2
+  latlong2: ^0.9.1
+
+  # HTTP pour l'API
+  http: ^1.6.0
+
+  # UI
+  cupertino_icons: ^1.0.8
+
+
+
 
 dev_dependencies:
   flutter_test:

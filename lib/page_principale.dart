@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:http/http.dart' as http;
 import 'api_service.dart'; // Contient VilleData et fetchVilleData
 
 class PagePrincipale extends StatefulWidget {
@@ -19,12 +22,18 @@ class _PagePrincipaleState extends State<PagePrincipale> {
   VilleData? villeData;
   bool isLoading = false;
   String? error;
+  double? latitude; // Position GPS
+  double? longitude; // Position GPS
+  double? villeLat; // Position ville sélectionnée
+  double? villeLon; // Position ville sélectionnée
 
   bool villeFavorite = false;
   List<String> villesFavorites = [];
   List<Map<String, String>> lieux = [];
 
-  String? villePrincipale; // 🆕 nouvelle variable : ville favorite principale
+  String? villePrincipale;
+
+  final MapController _mapController = MapController();
 
   @override
   void initState() {
@@ -36,57 +45,66 @@ class _PagePrincipaleState extends State<PagePrincipale> {
   Future<void> _initialiserVille() async {
     await _loadFavorites();
 
-    // 🆕 Vérifie si une ville principale est enregistrée
     final prefs = await SharedPreferences.getInstance();
     villePrincipale = prefs.getString('ville_principale');
 
     if (villePrincipale != null) {
       villeSelectionnee = villePrincipale!;
-      await _fetchVille(villeSelectionnee);
-      await _loadLieux(villeSelectionnee);
+      await _selectionnerVille(villeSelectionnee);
       return;
     }
 
-    // Sinon on tente la géolocalisation
+    // Géolocalisation
     try {
       String? currentCity = await _getCurrentCity();
-      if (currentCity != null) {
+      if (currentCity != null && currentCity.isNotEmpty) {
         villeSelectionnee = currentCity;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Ville géolocalisée : $villeSelectionnee")),
+        );
       }
     } catch (e) {
       debugPrint("Erreur géolocalisation: $e");
     }
 
-    await _fetchVille(villeSelectionnee);
-    await _loadLieux(villeSelectionnee);
+    // Sélectionne seulement si villeSelectionnee est défini
+    if (villeSelectionnee.isNotEmpty) {
+      await _selectionnerVille(villeSelectionnee);
+    }
   }
 
   /// ------------------ Géolocalisation ------------------
   Future<String?> _getCurrentCity() async {
-    bool serviceEnabled;
-    LocationPermission permission;
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return null;
+      if (!serviceEnabled) return null;
 
-    permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return null;
-    }
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return null;
+      }
 
-    if (permission == LocationPermission.deniedForever) return null;
+      if (permission == LocationPermission.deniedForever) return null;
 
-    final position = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
 
-    List<Placemark> placemarks = await placemarkFromCoordinates(
-      position.latitude,
-      position.longitude,
-    );
-    if (placemarks.isNotEmpty) {
-      return placemarks.first.locality ?? "Paris";
+      latitude = position.latitude;
+      longitude = position.longitude;
+
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
+      debugPrint("erreur");
+      if (placemarks.isNotEmpty) {
+        return placemarks.first.locality;
+      }
+    } catch (e) {
+      debugPrint("pas de ville trouvée: $e");
     }
     return null;
   }
@@ -240,7 +258,6 @@ class _PagePrincipaleState extends State<PagePrincipale> {
     });
   }
 
-  /// 🆕 Définir une ville favorite comme "principale"
   Future<void> _setVillePrincipale(String ville) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('ville_principale', ville);
@@ -256,41 +273,73 @@ class _PagePrincipaleState extends State<PagePrincipale> {
   void _onSearch() async {
     final query = _villeController.text.trim();
     if (query.isEmpty) return;
+    await _selectionnerVille(query);
+  }
 
-    List<String> villesTrouvees = [];
-    if (query.toLowerCase() == 'par') {
-      villesTrouvees = ['Paris, France', 'Parma, Italie'];
-    } else {
-      villesTrouvees = [query];
-    }
+  Future<void> _selectionnerVille(String ville) async {
+    setState(() {
+      isLoading = true;
+      error = null;
+    });
 
-    if (villesTrouvees.length == 1) {
-      _selectionnerVille(villesTrouvees[0]);
-    } else {
-      final villeChoisie = await showDialog<String>(
-        context: context,
-        builder: (_) => SimpleDialog(
-          title: const Text('Choisir une ville'),
-          children: villesTrouvees
-              .map(
-                (v) => SimpleDialogOption(
-                  child: Text(v),
-                  onPressed: () => Navigator.pop(context, v),
-                ),
-              )
-              .toList(),
-        ),
+    try {
+      // 1️⃣ Récupérer les données météo via ton API (VilleData)
+      final data = await fetchVilleData(ville);
+      setState(() {
+        villeSelectionnee = data.nom;
+        villeData = data;
+      });
+
+      // 2️⃣ Charger les lieux enregistrés
+      await _loadLieux(ville);
+
+      // 3️⃣ Récupérer les coordonnées de la ville via Nominatim
+      final url = Uri.parse(
+        'https://nominatim.openstreetmap.org/search?q=$ville&format=json&limit=1',
       );
-      if (villeChoisie != null) {
-        _selectionnerVille(villeChoisie);
+      final response = await http.get(
+        url,
+        headers: {'User-Agent': 'FlutterApp'},
+      );
+
+      if (response.statusCode == 200) {
+        final jsonData = jsonDecode(response.body);
+        if (jsonData.isNotEmpty) {
+          setState(() {
+            villeLat = double.parse(jsonData[0]['lat']);
+            villeLon = double.parse(jsonData[0]['lon']);
+          });
+        }
       }
+
+      // 4️⃣ Si pas de ville trouvée mais position GPS dispo, utiliser la position GPS
+      if (villeLat == null || villeLon == null) {
+        if (latitude != null && longitude != null) {
+          villeLat = latitude;
+          villeLon = longitude;
+        }
+      }
+
+      // 5️⃣ Centrer la carte
+      _centrerCarteSurVille();
+      _checkFavorite();
+    } catch (e) {
+      setState(() {
+        error = e.toString();
+      });
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
     }
   }
 
-  void _selectionnerVille(String ville) {
-    _fetchVille(ville);
-    _loadLieux(ville);
-    _villeController.clear();
+  void _centrerCarteSurVille() {
+    if (villeLat != null && villeLon != null) {
+      _mapController.move(LatLng(villeLat!, villeLon!), 13.0);
+    } else if (latitude != null && longitude != null) {
+      _mapController.move(LatLng(latitude!, longitude!), 13.0);
+    }
   }
 
   @override
@@ -305,7 +354,7 @@ class _PagePrincipaleState extends State<PagePrincipale> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            /// Recherche
+            // Barre de recherche
             Row(
               children: [
                 Expanded(
@@ -326,7 +375,7 @@ class _PagePrincipaleState extends State<PagePrincipale> {
             ),
             const SizedBox(height: 20),
 
-            /// Affichage météo
+            // Infos ville
             if (isLoading)
               const Center(child: CircularProgressIndicator())
             else if (error != null)
@@ -352,11 +401,6 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                         ),
                         onPressed: _toggleFavorite,
                       ),
-                      if (villePrincipale == villeData!.nom)
-                        const Icon(
-                          Icons.home,
-                          color: Colors.orange,
-                        ), // 🆕 icône ville principale
                     ],
                   ),
                   Text(
@@ -366,34 +410,81 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                 ],
               ),
 
+            // Carte
+            Container(
+              height: 300,
+              margin: const EdgeInsets.symmetric(vertical: 20),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(15),
+                border: Border.all(color: Colors.teal, width: 2),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(15),
+                child: FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    onMapReady: () {
+                      _centrerCarteSurVille();
+                    },
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate:
+                          "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                      userAgentPackageName: "com.example.app",
+                    ),
+                    MarkerLayer(
+                      markers: [
+                        if (villeLat != null && villeLon != null)
+                          Marker(
+                            point: LatLng(villeLat!, villeLon!),
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.location_on,
+                              color: Colors.red,
+                              size: 40,
+                            ),
+                          ),
+
+                        if (latitude != null && longitude != null)
+                          Marker(
+                            point: LatLng(latitude!, longitude!),
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.my_location,
+                              color: Colors.blue,
+                              size: 30,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Villes favorites
             const SizedBox(height: 20),
             const Text(
               'Villes favorites :',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
-
-            /// 🆕 Liste des villes favorites avec option "définir principale"
             Wrap(
               spacing: 8,
               children: villesFavorites.map((v) {
-                final isMain = v == villePrincipale;
                 return ActionChip(
-                  label: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(v),
-                      if (isMain)
-                        const Icon(Icons.home, size: 18, color: Colors.orange),
-                    ],
-                  ),
-                  onPressed: () {
-                    _selectionnerVille(v);
+                  label: Text(v),
+                  onPressed: () async {
+                    await _selectionnerVille(v);
                     _setVillePrincipale(v);
-                  }, // 🆕 clic long = définir principale
+                  },
                 );
               }).toList(),
             ),
 
+            // Lieux
             const SizedBox(height: 20),
             const Text(
               'Lieux enregistrés :',

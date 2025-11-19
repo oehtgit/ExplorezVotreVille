@@ -250,6 +250,79 @@ class _PagePrincipaleState extends State<PagePrincipale> {
       SnackBar(content: Text('$ville est maintenant la ville principale 🌆')),
     );
   }
+  Future<void> _showLieuFromMapClick(LatLng latlng) async {
+  final url = Uri.parse(
+    "https://nominatim.openstreetmap.org/reverse?lat=${latlng.latitude}&lon=${latlng.longitude}&format=json&addressdetails=1",
+  );
+
+  final response = await http.get(url, headers: {
+    "User-Agent": "FlutterApp"
+  });
+
+  if (response.statusCode != 200) return;
+
+  final data = jsonDecode(response.body);
+
+  // Nom trouvé par Nominatim
+  String nom =
+      data["name"] ??
+      data["display_name"] ??
+      "Lieu sans nom";
+
+  // Affiche une bottom sheet
+  showModalBottomSheet(
+    context: context,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (context) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              nom,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text("Latitude : ${latlng.latitude}"),
+            Text("Longitude : ${latlng.longitude}"),
+
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () {
+                final nouveauLieu = {
+                  'titre': nom,
+                  'lat': latlng.latitude.toString(),
+                  'lon': latlng.longitude.toString(),
+                };
+
+                setState(() {
+                  lieux.add(nouveauLieu);
+                });
+                _saveLieux(villeSelectionnee);
+
+                Navigator.pop(context);
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("$nom ajouté aux lieux")),
+                );
+              },
+              icon: const Icon(Icons.add_location_alt),
+              label: const Text("Ajouter ce lieu"),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
 
   /// ------------------ Recherche ------------------
   void _onSearch() async {
@@ -323,6 +396,39 @@ class _PagePrincipaleState extends State<PagePrincipale> {
       _mapController.move(LatLng(latitude!, longitude!), 13.0);
     }
   }
+  void _afficherDetailLieu(Map<String, String> lieu) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(lieu['titre']!),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text("Latitude : ${lieu['lat']}"),
+          Text("Longitude : ${lieu['lon']}"),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: () {
+              final lat = double.parse(lieu['lat']!);
+              final lon = double.parse(lieu['lon']!);
+              _mapController.move(LatLng(lat, lon), 15);
+              Navigator.pop(context);
+            },
+            icon: const Icon(Icons.location_searching),
+            label: const Text("Centrer sur la carte"),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("Fermer"),
+        ),
+      ],
+    ),
+  );
+}
 
   @override
   Widget build(BuildContext context) {
@@ -408,8 +514,9 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                     onMapReady: () {
                       _centrerCarteSurVille();
                     },
-                    onTap: (tapPosition, latlng) {
+                    onTap: (tapPosition, latlng) async {
                       if (ajoutLieuEnCours && nomLieuTemp != null) {
+                        // ---- Cas 1 : On est dans l’ajout manuel d’un lieu ----
                         final nouveauLieu = {
                           'titre': nomLieuTemp!,
                           'lat': latlng.latitude.toString(),
@@ -431,8 +538,13 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                             ),
                           ),
                         );
+                      } 
+                      else {
+                        // ---- Cas 2 : On clique sur un lieu de la carte (pas enregistré) ----
+                        await _showLieuFromMapClick(latlng);
                       }
                     },
+
                   ),
 
                   children: [
@@ -478,11 +590,15 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                             ),
                             width: 40,
                             height: 40,
-                            child: const Icon(
-                              Icons.place,
-                              color: Colors.green,
-                              size: 35,
+                            child: GestureDetector(
+                              onTap: () => _afficherDetailLieu(lieu),
+                              child: const Icon(
+                                Icons.place,
+                                color: Colors.green,
+                                size: 35,
+                              ),
                             ),
+
                           );
                         }).toList(),
                       ],
@@ -491,7 +607,7 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                 ),
               ),
             ),
-
+            
             // Villes favorites
             const SizedBox(height: 20),
             const Text(

@@ -26,6 +26,8 @@ class _PagePrincipaleState extends State<PagePrincipale> {
   double? longitude; // Position GPS
   double? villeLat; // Position ville sélectionnée
   double? villeLon; // Position ville sélectionnée
+  bool ajoutLieuEnCours = false;
+  String? nomLieuTemp;
 
   bool villeFavorite = false;
   List<String> villesFavorites = [];
@@ -94,7 +96,8 @@ class _PagePrincipaleState extends State<PagePrincipale> {
 
       latitude = position.latitude;
       longitude = position.longitude;
-
+      debugPrint(latitude.toString());
+      debugPrint(longitude.toString());
       List<Placemark> placemarks = await placemarkFromCoordinates(
         position.latitude,
         position.longitude,
@@ -152,30 +155,15 @@ class _PagePrincipaleState extends State<PagePrincipale> {
   }
 
   void _ajouterLieu() {
-    final titreController = TextEditingController();
-    final categorieController = TextEditingController();
-    final imageController = TextEditingController();
+    final nomController = TextEditingController();
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Ajouter un nouveau lieu'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titreController,
-              decoration: const InputDecoration(labelText: 'Titre'),
-            ),
-            TextField(
-              controller: categorieController,
-              decoration: const InputDecoration(labelText: 'Catégorie'),
-            ),
-            TextField(
-              controller: imageController,
-              decoration: const InputDecoration(labelText: 'Image URL'),
-            ),
-          ],
+        title: const Text('Nom du lieu'),
+        content: TextField(
+          controller: nomController,
+          decoration: const InputDecoration(labelText: 'Nom'),
         ),
         actions: [
           TextButton(
@@ -184,18 +172,18 @@ class _PagePrincipaleState extends State<PagePrincipale> {
           ),
           ElevatedButton(
             onPressed: () {
-              final newLieu = {
-                'titre': titreController.text,
-                'categorie': categorieController.text,
-                'image': imageController.text,
-              };
-              setState(() {
-                lieux.add(newLieu);
-              });
-              _saveLieux(villeSelectionnee);
+              nomLieuTemp = nomController.text.trim();
+              ajoutLieuEnCours = true;
+
               Navigator.pop(context);
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text("Cliquez sur la carte pour placer le lieu"),
+                ),
+              );
             },
-            child: const Text('Ajouter'),
+            child: const Text('Placer sur la carte'),
           ),
         ],
       ),
@@ -206,25 +194,19 @@ class _PagePrincipaleState extends State<PagePrincipale> {
     return Card(
       elevation: 4,
       margin: const EdgeInsets.symmetric(vertical: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: ListTile(
-        leading: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.network(
-            lieu['image']!,
-            width: 60,
-            height: 60,
-            fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) => Container(
-              width: 60,
-              height: 60,
-              color: Colors.grey[300],
-              child: const Icon(Icons.image_not_supported),
-            ),
-          ),
-        ),
         title: Text(lieu['titre']!),
-        subtitle: Text(lieu['categorie']!),
+        trailing: const Icon(Icons.location_searching),
+        onTap: () {
+          final lat = double.parse(lieu['lat']!);
+          final lon = double.parse(lieu['lon']!);
+
+          _mapController.move(LatLng(lat, lon), 15);
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Centré sur ${lieu['titre']}")),
+          );
+        },
       ),
     );
   }
@@ -426,7 +408,33 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                     onMapReady: () {
                       _centrerCarteSurVille();
                     },
+                    onTap: (tapPosition, latlng) {
+                      if (ajoutLieuEnCours && nomLieuTemp != null) {
+                        final nouveauLieu = {
+                          'titre': nomLieuTemp!,
+                          'lat': latlng.latitude.toString(),
+                          'lon': latlng.longitude.toString(),
+                        };
+
+                        setState(() {
+                          lieux.add(nouveauLieu);
+                          ajoutLieuEnCours = false;
+                          nomLieuTemp = null;
+                        });
+
+                        _saveLieux(villeSelectionnee);
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              "Lieu ajouté : ${nouveauLieu['titre']}",
+                            ),
+                          ),
+                        );
+                      }
+                    },
                   ),
+
                   children: [
                     TileLayer(
                       urlTemplate:
@@ -435,6 +443,7 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                     ),
                     MarkerLayer(
                       markers: [
+                        // Ville sélectionnée
                         if (villeLat != null && villeLon != null)
                           Marker(
                             point: LatLng(villeLat!, villeLon!),
@@ -447,6 +456,7 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                             ),
                           ),
 
+                        // Position GPS
                         if (latitude != null && longitude != null)
                           Marker(
                             point: LatLng(latitude!, longitude!),
@@ -458,6 +468,23 @@ class _PagePrincipaleState extends State<PagePrincipale> {
                               size: 30,
                             ),
                           ),
+
+                        // Lieux utilisateur
+                        ...lieux.map((lieu) {
+                          return Marker(
+                            point: LatLng(
+                              double.parse(lieu['lat']!),
+                              double.parse(lieu['lon']!),
+                            ),
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.place,
+                              color: Colors.green,
+                              size: 35,
+                            ),
+                          );
+                        }).toList(),
                       ],
                     ),
                   ],
